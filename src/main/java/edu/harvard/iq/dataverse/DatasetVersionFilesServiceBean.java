@@ -336,6 +336,13 @@ public class DatasetVersionFilesServiceBean implements Serializable {
         List<Predicate> predicates = new ArrayList<>();
         Predicate basePredicate = criteriaBuilder.equal(fileMetadataRoot.get("datasetVersion").<String>get("id"), datasetVersion.getId());
         predicates.add(basePredicate);
+
+        Predicate notDeleted = criteriaBuilder.or(
+            criteriaBuilder.isNull(fileMetadataRoot.get("dataFile").<Boolean>get("deleted")),
+            criteriaBuilder.isFalse(fileMetadataRoot.get("dataFile").<Boolean>get("deleted"))
+        );
+        predicates.add(notDeleted);
+
         String contentType = searchCriteria.getContentType();
         if (contentType != null) {
             predicates.add(criteriaBuilder.equal(fileMetadataRoot.get("dataFile").<String>get("contentType"), contentType));

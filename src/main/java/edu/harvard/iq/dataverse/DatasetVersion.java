@@ -263,12 +263,24 @@ public class DatasetVersion implements Serializable {
         
         DataFileComparator dfc = new DataFileComparator();
         Collections.sort(fileMetadatas, dfc.compareBy(true, null!=FileMetadata.getCategorySortOrder(), "name", true));
-        return fileMetadatas;
+
+        List<FileMetadata> filteredMetadatas = new ArrayList<>();
+        for (FileMetadata fmd : fileMetadatas) {
+            if (fmd.getDataFile() == null || fmd.getDataFile().getDeleted() == null || !fmd.getDataFile().getDeleted()) {
+                filteredMetadatas.add(fmd);
+            }
+        }
+
+        return filteredMetadatas;
     }
     
     public List<FileMetadata> getFileMetadatasSortedByLabelAndFolder() {
         ArrayList<FileMetadata> fileMetadatasCopy = new ArrayList<>();
-        fileMetadatasCopy.addAll(fileMetadatas);
+        for (FileMetadata fmd : fileMetadatas) {
+            if (fmd.getDataFile() == null || fmd.getDataFile().getDeleted() == null || !fmd.getDataFile().getDeleted()) {
+                fileMetadatasCopy.add(fmd);
+            }
+        }
         DataFileComparator dfc = new DataFileComparator();
         Collections.sort(fileMetadatasCopy, dfc.compareBy(true, null!=FileMetadata.getCategorySortOrder(), "name", true));
         return fileMetadatasCopy;
@@ -279,6 +291,9 @@ public class DatasetVersion implements Serializable {
         HashSet<String> subFolders = new HashSet<>();
 
         for (FileMetadata fileMetadata : fileMetadatas) {
+            if (fileMetadata.getDataFile() != null && fileMetadata.getDataFile().getDeleted() != null && fileMetadata.getDataFile().getDeleted()) {
+                continue;
+            }
             String thisFolder = fileMetadata.getDirectoryLabel() == null ? "" : fileMetadata.getDirectoryLabel(); 
             
             if (folderName.equals(thisFolder)) {
