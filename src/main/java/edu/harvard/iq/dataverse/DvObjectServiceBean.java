@@ -6,6 +6,8 @@ import edu.harvard.iq.dataverse.pidproviders.PidProviderFactoryBean;
 import edu.harvard.iq.dataverse.pidproviders.PidUtil;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -64,6 +66,34 @@ public class DvObjectServiceBean implements java.io.Serializable {
         } catch (NoResultException | NonUniqueResultException ex) {
             return null;
         }
+    }
+
+    /**
+     * Batch version of {@link #findDvObject(Long)}: loads many dataverse
+     * objects (dataverses, datasets, datafiles) with a single {@code IN}
+     * query instead of one query per id. The to-one closure (owner, quota,
+     * release user, creator) is fetch joined: those relations are EAGER, so
+     * without the fetch each would cost one query per object ( weaving is
+     * disabled, and {@code @BatchFetch} does not reroute EAGER loading).
+     * To-one joins never multiply rows, so this stays a single query.
+     *
+     * @param ids dataverse object ids; empty or null yields an empty list
+     * @return the found objects (missing ids are skipped, like repeated finds)
+     */
+    public List<DvObject> findDvObjectsByIds(Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return em.createQuery(
+                "SELECT o FROM DvObject o "
+                    + "LEFT JOIN FETCH o.owner "
+                    + "LEFT JOIN FETCH o.storageQuota "
+                    + "LEFT JOIN FETCH o.releaseUser "
+                    + "LEFT JOIN FETCH o.creator "
+                    + "WHERE o.id IN :ids",
+                DvObject.class)
+            .setParameter("ids", ids)
+            .getResultList();
     }
 
     public List<DvObject> findAll() {

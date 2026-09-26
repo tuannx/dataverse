@@ -18,6 +18,7 @@ import edu.harvard.iq.dataverse.util.SystemConfig;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -178,6 +179,30 @@ public class DatasetVersionServiceBean implements java.io.Serializable {
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.creator")
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.dataFileTags")
             .getSingleResult();
+    }
+
+    /**
+     * Batch-loads dataset versions with their datasets and dataset owners in
+     * a single query, for notification rendering and other per-row display
+     * code that would otherwise issue one query per version.
+     *
+     * @param ids dataset version ids; empty or null yields an empty list
+     * @return the found versions (missing ids are skipped, like repeated finds)
+     */
+    public List<DatasetVersion> findVersionsByIds(Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return em.createQuery(
+                "SELECT v FROM DatasetVersion v "
+                    + "JOIN FETCH v.dataset d "
+                    + "JOIN FETCH d.owner "
+                    + "LEFT JOIN FETCH d.storageQuota "
+                    + "LEFT JOIN FETCH v.termsOfUseAndAccess "
+                    + "WHERE v.id IN :ids",
+                DatasetVersion.class)
+            .setParameter("ids", ids)
+            .getResultList();
     }
 
     /**

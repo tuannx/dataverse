@@ -11,6 +11,15 @@ import jakarta.ejb.Stateless;
 import jakarta.json.JsonException;
 import jakarta.json.JsonValue;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import static edu.harvard.iq.dataverse.dataset.DatasetUtil.getLocaleCurationStatusLabel;
 import static edu.harvard.iq.dataverse.util.json.JsonPrinter.jsonRoleAssignments;
 
@@ -50,17 +59,91 @@ public class InAppNotificationsJsonPrinter {
     public static final String GUIDES_SECTION_PATH_USER_HTML = "user/index.html";
 
     @EJB
-    private DataverseServiceBean dataverseService;
-    @EJB
     private DatasetServiceBean datasetService;
     @EJB
     private DatasetVersionServiceBean datasetVersionService;
     @EJB
     private DataFileServiceBean dataFileService;
     @EJB
+    private DvObjectServiceBean dvObjectService;
+    @EJB
     private PermissionServiceBean permissionService;
     @EJB
     private SystemConfig systemConfig;
+
+    /**
+     * Display data preloaded for a page of notifications: referenced objects by
+     * id, plus a per-user cache of effective role assignments. Pass the same
+     * instance to every {@link #addFieldsByType} call of one page render so
+     * each object and each assignment set loads once.
+     */
+    public static class NotificationPreload {
+        private final Map<Long, DvObject> dvObjects = new HashMap<>();
+        private final Map<Long, DatasetVersion> versions = new HashMap<>();
+        private final Map<String, List<RoleAssignment>> assignmentsByUserAndObject = new HashMap<>();
+    }
+
+    /**
+     * Preloads every object referenced by the given notifications with a fixed
+     * handful of {@code IN} queries (dataverse objects, versions, display
+     * graphs), replacing one query per notification per object.
+     */
+    public NotificationPreload preload(List<UserNotification> notifications) {
+        NotificationPreload preload = new NotificationPreload();
+        Set<Long> dvObjectIds = new HashSet<>();
+        Set<Long> fileIds = new HashSet<>();
+        Set<Long> versionIds = new HashSet<>();
+        for (UserNotification notification : notifications) {
+            if (notification.getObjectId() == null) {
+                continue;
+            }
+            switch (notification.getType()) {
+                case CREATEDS:
+                case SUBMITTEDDS:
+                case PUBLISHEDDS:
+                case PUBLISHFAILED_PIDREG:
+                case RETURNEDDS:
+                case WORKFLOW_SUCCESS:
+                case WORKFLOW_FAILURE:
+                case PIDRECONCILED:
+                case FILESYSTEMIMPORT:
+                case CHECKSUMIMPORT:
+                case STATUSUPDATED:
+                    versionIds.add(notification.getObjectId());
+                    break;
+                case REQUESTFILEACCESS:
+                case REQUESTEDFILEACCESS:
+                    fileIds.add(notification.getObjectId());
+                    break;
+                case CREATEACC:
+                    break;
+                default:
+                    dvObjectIds.add(notification.getObjectId());
+                    break;
+            }
+        }
+        Map<Long, Dataset> datasets = new HashMap<>();
+        List<DataFile> files = new ArrayList<>();
+        for (DvObject dvObject : dvObjectService.findDvObjectsByIds(dvObjectIds)) {
+            preload.dvObjects.put(dvObject.getId(), dvObject);
+            if (dvObject instanceof Dataset) {
+                datasets.put(dvObject.getId(), (Dataset) dvObject);
+            } else if (dvObject instanceof DataFile) {
+                files.add((DataFile) dvObject);
+            }
+        }
+        for (DataFile dataFile : dataFileService.findFilesByIds(fileIds)) {
+            preload.dvObjects.put(dataFile.getId(), dataFile);
+            files.add(dataFile);
+        }
+        for (DatasetVersion version : datasetVersionService.findVersionsByIds(versionIds)) {
+            preload.versions.put(version.getId(), version);
+            datasets.put(version.getDataset().getId(), version.getDataset());
+        }
+        datasetService.preloadDisplayGraphs(datasets.values());
+        dataFileService.preloadFileMetadatas(files);
+        return preload;
+    }
 
     /**
      * Populates a JSON builder with fields specific to the notification type.
@@ -70,30 +153,42 @@ public class InAppNotificationsJsonPrinter {
      * @param userNotification  The notification object containing the details.
      */
     public void addFieldsByType(final NullSafeJsonBuilder notificationJson, final AuthenticatedUser authenticatedUser, final UserNotification userNotification) {
+        addFieldsByType(notificationJson, authenticatedUser, userNotification,
+                preload(Collections.singletonList(userNotification)));
+    }
+
+    /**
+     * Adds type-specific fields resolving every referenced object from the
+     * given {@link NotificationPreload} instead of issuing one query per
+     * notification. Callers rendering a page must preload once for the whole
+     * list and pass the same instance to every call.
+     */
+    public void addFieldsByType(final NullSafeJsonBuilder notificationJson, final AuthenticatedUser authenticatedUser,
+            final UserNotification userNotification, final NotificationPreload preload) {
         final AuthenticatedUser requestor = userNotification.getRequestor();
 
         switch (userNotification.getType()) {
             case ASSIGNROLE:
             case REVOKEROLE:
-                addRoleFields(notificationJson, authenticatedUser, userNotification);
+                addRoleFields(notificationJson, authenticatedUser, userNotification, preload);
                 break;
             case CREATEDV:
-                addCreateDataverseFields(notificationJson, userNotification);
+                addCreateDataverseFields(notificationJson, userNotification, preload);
                 break;
             case REQUESTFILEACCESS:
-                addRequestFileAccessFields(notificationJson, userNotification, requestor);
+                addRequestFileAccessFields(notificationJson, userNotification, requestor, preload);
                 break;
             case REQUESTEDFILEACCESS:
-                addDataFileFields(notificationJson, userNotification);
+                addDataFileFields(notificationJson, userNotification, preload);
                 break;
             case DATASETCREATED:
-                addDatasetCreatedFields(notificationJson, userNotification, requestor);
+                addDatasetCreatedFields(notificationJson, userNotification, requestor, preload);
                 break;
             case CREATEDS:
-                addCreateDatasetFields(notificationJson, userNotification);
+                addCreateDatasetFields(notificationJson, userNotification, preload);
                 break;
             case SUBMITTEDDS:
-                addSubmittedDatasetFields(notificationJson, userNotification, requestor);
+                addSubmittedDatasetFields(notificationJson, userNotification, requestor, preload);
                 break;
             case PUBLISHEDDS:
             case PUBLISHFAILED_PIDREG:
@@ -103,10 +198,10 @@ public class InAppNotificationsJsonPrinter {
             case PIDRECONCILED:
             case FILESYSTEMIMPORT:
             case CHECKSUMIMPORT:
-                addDatasetVersionFields(notificationJson, userNotification);
+                addDatasetVersionFields(notificationJson, userNotification, preload);
                 break;
             case STATUSUPDATED:
-                addDatasetVersionFields(notificationJson, userNotification, true);
+                addDatasetVersionFields(notificationJson, userNotification, preload, true);
                 break;
             case CREATEACC:
                 addCreateAccountFields(notificationJson);
@@ -120,49 +215,60 @@ public class InAppNotificationsJsonPrinter {
             case CHECKSUMFAIL:
             case GRANTFILEACCESS:
             case REJECTFILEACCESS:
-                addDatasetFields(notificationJson, userNotification);
+                addDatasetFields(notificationJson, userNotification, preload);
                 break;
             case INGESTCOMPLETED:
             case INGESTCOMPLETEDWITHERRORS:
-                addIngestFields(notificationJson, userNotification);
+                addIngestFields(notificationJson, userNotification, preload);
                 break;
             case DATASETMENTIONED:
-                addDatasetMentionedFields(notificationJson, userNotification);
+                addDatasetMentionedFields(notificationJson, userNotification, preload);
                 break;
             case DATASETMOVED:
-                addDatasetMovedFields(notificationJson, userNotification, requestor);
+                addDatasetMovedFields(notificationJson, userNotification, requestor, preload);
                 break;
         }
     }
 
-    private void addRoleFields(final NullSafeJsonBuilder notificationJson, final AuthenticatedUser authenticatedUser, final UserNotification userNotification) {
-        Dataverse dataverse = dataverseService.find(userNotification.getObjectId());
-        if (dataverse != null) {
-            notificationJson.add(KEY_ROLE_ASSIGNMENTS, jsonRoleAssignments(permissionService.getEffectiveRoleAssignments(authenticatedUser, dataverse)));
+    private void addRoleFields(final NullSafeJsonBuilder notificationJson, final AuthenticatedUser authenticatedUser,
+            final UserNotification userNotification, final NotificationPreload preload) {
+        DvObject dvObject = preload.dvObjects.get(userNotification.getObjectId());
+        if (dvObject instanceof Dataverse) {
+            Dataverse dataverse = (Dataverse) dvObject;
+            notificationJson.add(KEY_ROLE_ASSIGNMENTS, jsonRoleAssignments(cachedAssignments(authenticatedUser, dataverse, preload)));
             notificationJson.add(KEY_DATAVERSE_ALIAS, dataverse.getAlias());
             notificationJson.add(KEY_DATAVERSE_DISPLAY_NAME, dataverse.getDisplayName());
+        } else if (dvObject instanceof Dataset) {
+            Dataset dataset = (Dataset) dvObject;
+            notificationJson.add(KEY_ROLE_ASSIGNMENTS, jsonRoleAssignments(cachedAssignments(authenticatedUser, dataset, preload)));
+            notificationJson.add(KEY_DATASET_PERSISTENT_ID, dataset.getGlobalId().asString());
+            notificationJson.add(KEY_DATASET_DISPLAY_NAME, dataset.getDisplayName());
+        } else if (dvObject instanceof DataFile) {
+            DataFile datafile = (DataFile) dvObject;
+            notificationJson.add(KEY_ROLE_ASSIGNMENTS, jsonRoleAssignments(cachedAssignments(authenticatedUser, datafile, preload)));
+            notificationJson.add(KEY_OWNER_PERSISTENT_ID, datafile.getOwner().getGlobalId().asString());
+            notificationJson.add(KEY_OWNER_DISPLAY_NAME, datafile.getOwner().getDisplayName());
         } else {
-            Dataset dataset = datasetService.find(userNotification.getObjectId());
-            if (dataset != null) {
-                notificationJson.add(KEY_ROLE_ASSIGNMENTS, jsonRoleAssignments(permissionService.getEffectiveRoleAssignments(authenticatedUser, dataset)));
-                notificationJson.add(KEY_DATASET_PERSISTENT_ID, dataset.getGlobalId().asString());
-                notificationJson.add(KEY_DATASET_DISPLAY_NAME, dataset.getDisplayName());
-            } else {
-                DataFile datafile = dataFileService.find(userNotification.getObjectId());
-                if (datafile != null) {
-                    notificationJson.add(KEY_ROLE_ASSIGNMENTS, jsonRoleAssignments(permissionService.getEffectiveRoleAssignments(authenticatedUser, datafile)));
-                    notificationJson.add(KEY_OWNER_PERSISTENT_ID, datafile.getOwner().getGlobalId().asString());
-                    notificationJson.add(KEY_OWNER_DISPLAY_NAME, datafile.getOwner().getDisplayName());
-                } else {
-                    notificationJson.add(KEY_OBJECT_DELETED, true);
-                }
-            }
+            notificationJson.add(KEY_OBJECT_DELETED, true);
         }
     }
 
-    private void addCreateDataverseFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
-        final Dataverse dataverse = dataverseService.find(userNotification.getObjectId());
-        if (dataverse != null) {
+    private List<RoleAssignment> cachedAssignments(final AuthenticatedUser authenticatedUser, final DvObject dvObject,
+            final NotificationPreload preload) {
+        String key = authenticatedUser.getId() + ":" + dvObject.getId();
+        List<RoleAssignment> cached = preload.assignmentsByUserAndObject.get(key);
+        if (cached == null) {
+            cached = permissionService.getEffectiveRoleAssignments(authenticatedUser, dvObject);
+            preload.assignmentsByUserAndObject.put(key, cached);
+        }
+        return cached;
+    }
+
+    private void addCreateDataverseFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
+        DvObject dvObject = preload.dvObjects.get(userNotification.getObjectId());
+        if (dvObject instanceof Dataverse) {
+            final Dataverse dataverse = (Dataverse) dvObject;
             notificationJson.add(KEY_DATAVERSE_ALIAS, dataverse.getAlias());
             notificationJson.add(KEY_DATAVERSE_DISPLAY_NAME, dataverse.getDisplayName());
             Dataverse owner = dataverse.getOwner();
@@ -181,14 +287,17 @@ public class InAppNotificationsJsonPrinter {
         addGuidesFields(notificationJson, GUIDES_SECTION_PATH_USER_HTML);
     }
 
-    private void addRequestFileAccessFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification, final AuthenticatedUser requestor) {
+    private void addRequestFileAccessFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final AuthenticatedUser requestor, final NotificationPreload preload) {
         addRequestorFields(notificationJson, requestor);
-        addDataFileFields(notificationJson, userNotification);
+        addDataFileFields(notificationJson, userNotification, preload);
     }
 
-    private void addDataFileFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
-        final DataFile dataFile = dataFileService.find(userNotification.getObjectId());
-        if (dataFile != null) {
+    private void addDataFileFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
+        DvObject dvObject = preload.dvObjects.get(userNotification.getObjectId());
+        if (dvObject instanceof DataFile) {
+            final DataFile dataFile = (DataFile) dvObject;
             notificationJson.add(KEY_DATAFILE_ID, dataFile.getId());
             notificationJson.add(KEY_DATAFILE_DISPLAY_NAME, dataFile.getDisplayName());
             notificationJson.add(KEY_DATASET_DISPLAY_NAME, dataFile.getOwner().getDisplayName());
@@ -198,8 +307,9 @@ public class InAppNotificationsJsonPrinter {
         }
     }
 
-    private void addDatasetCreatedFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification, final AuthenticatedUser requestor) {
-        addDatasetFields(notificationJson, userNotification);
+    private void addDatasetCreatedFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final AuthenticatedUser requestor, final NotificationPreload preload) {
+        addDatasetFields(notificationJson, userNotification, preload);
         addRequestorFields(notificationJson, requestor);
     }
 
@@ -211,9 +321,11 @@ public class InAppNotificationsJsonPrinter {
         }
     }
 
-    private void addDatasetFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
-        final Dataset dataset = datasetService.find(userNotification.getObjectId());
-        if (dataset != null) {
+    private void addDatasetFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
+        DvObject dvObject = preload.dvObjects.get(userNotification.getObjectId());
+        if (dvObject instanceof Dataset) {
+            final Dataset dataset = (Dataset) dvObject;
             notificationJson.add(KEY_DATASET_PERSISTENT_ID, dataset.getGlobalId().asString());
             notificationJson.add(KEY_DATASET_DISPLAY_NAME, dataset.getDisplayName());
             notificationJson.add(KEY_OWNER_ALIAS, dataset.getOwner().getAlias());
@@ -223,9 +335,10 @@ public class InAppNotificationsJsonPrinter {
         }
     }
 
-    private void addCreateDatasetFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
+    private void addCreateDatasetFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
         addGuidesFields(notificationJson, GUIDES_SECTION_PATH_DATASET_MANAGEMENT_HTML);
-        addDatasetVersionFields(notificationJson, userNotification);
+        addDatasetVersionFields(notificationJson, userNotification, preload);
     }
 
     private void addGuidesFields(final NullSafeJsonBuilder notificationJson, String guidesSectionPath) {
@@ -237,17 +350,20 @@ public class InAppNotificationsJsonPrinter {
         }
     }
 
-    private void addSubmittedDatasetFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification, final AuthenticatedUser requestor) {
-        addDatasetVersionFields(notificationJson, userNotification);
+    private void addSubmittedDatasetFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final AuthenticatedUser requestor, final NotificationPreload preload) {
+        addDatasetVersionFields(notificationJson, userNotification, preload);
         addRequestorFields(notificationJson, requestor);
     }
 
-    private void addDatasetVersionFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
-        addDatasetVersionFields(notificationJson, userNotification, false);
+    private void addDatasetVersionFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
+        addDatasetVersionFields(notificationJson, userNotification, preload, false);
     }
 
-    private void addDatasetVersionFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification, final boolean addCurationStatus) {
-        final DatasetVersion datasetVersion = datasetVersionService.find(userNotification.getObjectId());
+    private void addDatasetVersionFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload, final boolean addCurationStatus) {
+        final DatasetVersion datasetVersion = preload.versions.get(userNotification.getObjectId());
         if (datasetVersion != null) {
             Dataset dataset = datasetVersion.getDataset();
             notificationJson.add(KEY_DATASET_PERSISTENT_ID, dataset.getGlobalId().asString());
@@ -262,13 +378,15 @@ public class InAppNotificationsJsonPrinter {
         }
     }
 
-    private void addIngestFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
-        addDatasetFields(notificationJson, userNotification);
+    private void addIngestFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
+        addDatasetFields(notificationJson, userNotification, preload);
         addGuidesFields(notificationJson, GUIDES_SECTION_PATH_DATASET_MANAGEMENT_TABULAR_FILES_HTML);
     }
 
-    private void addDatasetMentionedFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification) {
-        addDatasetFields(notificationJson, userNotification);
+    private void addDatasetMentionedFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final NotificationPreload preload) {
+        addDatasetFields(notificationJson, userNotification, preload);
 
         final String additionalInfo = userNotification.getAdditionalInfo();
 
@@ -288,8 +406,9 @@ public class InAppNotificationsJsonPrinter {
         }
     }
 
-    private void addDatasetMovedFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification, final AuthenticatedUser requestor) {
-        addDatasetFields(notificationJson, userNotification);
+    private void addDatasetMovedFields(final NullSafeJsonBuilder notificationJson, final UserNotification userNotification,
+            final AuthenticatedUser requestor, final NotificationPreload preload) {
+        addDatasetFields(notificationJson, userNotification, preload);
         addRequestorFields(notificationJson, requestor);
     }
 }

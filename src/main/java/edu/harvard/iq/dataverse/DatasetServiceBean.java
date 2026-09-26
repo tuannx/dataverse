@@ -116,6 +116,69 @@ public class DatasetServiceBean implements java.io.Serializable {
     }
 
     /**
+     * Preloads the display graphs of many datasets with two {@code IN} queries
+     * (versions, then fields) so per-row display code such as notification
+     * rendering does not issue one query per dataset. Versions keep the
+     * mapping order (newest first); fields are order-free for title lookup.
+     * Setting these inverse-side collections issues no writes.
+     *
+     * @param datasets managed datasets whose versions and fields to preload
+     */
+    public void preloadDisplayGraphs(Collection<Dataset> datasets) {
+        if (datasets == null || datasets.isEmpty()) {
+            return;
+        }
+        List<Long> datasetIds = new ArrayList<>();
+        for (Dataset dataset : datasets) {
+            datasetIds.add(dataset.getId());
+        }
+        List<DatasetVersion> versions = em.createQuery(
+                "SELECT v FROM DatasetVersion v JOIN FETCH v.dataset LEFT JOIN FETCH v.termsOfUseAndAccess "
+                    + "WHERE v.dataset.id IN :ids "
+                    + "ORDER BY v.dataset.id, v.versionNumber DESC, v.minorVersionNumber DESC",
+                DatasetVersion.class)
+            .setParameter("ids", datasetIds)
+            .getResultList();
+        Map<Long, List<DatasetVersion>> versionsByDataset = new HashMap<>();
+        List<Long> versionIds = new ArrayList<>();
+        for (DatasetVersion version : versions) {
+            versionIds.add(version.getId());
+            List<DatasetVersion> datasetVersions = versionsByDataset.get(version.getDataset().getId());
+            if (datasetVersions == null) {
+                datasetVersions = new ArrayList<>();
+                versionsByDataset.put(version.getDataset().getId(), datasetVersions);
+            }
+            datasetVersions.add(version);
+        }
+        Map<Long, List<DatasetField>> fieldsByVersion = new HashMap<>();
+        if (!versionIds.isEmpty()) {
+            List<DatasetField> fields = em.createQuery(
+                    "SELECT f FROM DatasetField f JOIN FETCH f.datasetVersion JOIN FETCH f.datasetFieldType "
+                        + "WHERE f.datasetVersion.id IN :ids",
+                    DatasetField.class)
+                .setParameter("ids", versionIds)
+                .getResultList();
+            for (DatasetField field : fields) {
+                Long versionId = field.getDatasetVersion().getId();
+                List<DatasetField> versionFields = fieldsByVersion.get(versionId);
+                if (versionFields == null) {
+                    versionFields = new ArrayList<>();
+                    fieldsByVersion.put(versionId, versionFields);
+                }
+                versionFields.add(field);
+            }
+        }
+        for (Dataset dataset : datasets) {
+            List<DatasetVersion> datasetVersions = versionsByDataset.get(dataset.getId());
+            dataset.setVersions(datasetVersions == null ? new ArrayList<>() : datasetVersions);
+            for (DatasetVersion version : dataset.getVersions()) {
+                List<DatasetField> versionFields = fieldsByVersion.get(version.getId());
+                version.setDatasetFields(versionFields == null ? new ArrayList<>() : versionFields);
+            }
+        }
+    }
+
+    /**
      * Retrieve a dataset with the deep underlying structure in one query execution.
      * This is a more optimal choice when accessing files of a dataset.
      * In a contrast, the find() method does not pre-fetch the file objects and results in point queries when accessing these objects.
