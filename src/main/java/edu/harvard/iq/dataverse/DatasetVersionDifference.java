@@ -61,6 +61,20 @@ public final class DatasetVersionDifference {
     }
 
     public DatasetVersionDifference(DatasetVersion newVersion, DatasetVersion originalVersion) {
+        this(newVersion, originalVersion,
+                new ArrayList<>(newVersion.getFileMetadatas()),
+                new ArrayList<>(originalVersion.getFileMetadatas()));
+    }
+
+    /**
+     * Same difference computation, but over explicit file lists instead of the
+     * versions' full file graphs. Callers pass only the files involved in the
+     * change (see {@code DatasetVersionServiceBean.buildVersionDifference}):
+     * files present and identical in both versions contribute nothing to any
+     * diff output, so the result is identical at a fraction of the queries.
+     */
+    public DatasetVersionDifference(DatasetVersion newVersion, DatasetVersion originalVersion,
+            List<FileMetadata> newFiles, List<FileMetadata> originalFiles) {
         setOriginalVersion(originalVersion);
         setNewVersion(newVersion);
         //Compare Data
@@ -117,11 +131,11 @@ public final class DatasetVersionDifference {
         long startTime = System.currentTimeMillis();
         Map<Long, FileMetadata> originalFileMetadataMap = new HashMap<>();
         Map<Long, FileMetadata> previousIDtoFileMetadataMap = new HashMap<>();
-        for (FileMetadata fmdo : originalVersion.getFileMetadatas()) {
+        for (FileMetadata fmdo : originalFiles) {
             originalFileMetadataMap.put(fmdo.getDataFile().getId(), fmdo);
         }
 
-        for (FileMetadata fmdn : newVersion.getFileMetadatas()) {
+        for (FileMetadata fmdn : newFiles) {
             DataFile ndf = fmdn.getDataFile();
             Long id = ndf.getId();
             FileMetadata fmdo = originalFileMetadataMap.get(id);
@@ -178,7 +192,7 @@ public final class DatasetVersionDifference {
         }
         
         logger.fine("Main difference loop execution time: " + (System.currentTimeMillis() - startTime) + " ms");
-        initDatasetFilesDifferencesList();
+        initDatasetFilesDifferencesList(newFiles, originalFiles);
 
         //Sort within blocks by datasetfieldtype display order
         for (List<DatasetField[]> blockList : detailDataByBlock) {
@@ -608,7 +622,7 @@ public final class DatasetVersionDifference {
         this.changedTermsAccess = changedTermsAccess;
     }
 
-    private void initDatasetFilesDifferencesList() {
+    private void initDatasetFilesDifferencesList(List<FileMetadata> newFiles, List<FileMetadata> originalFiles) {
         datasetFilesDiffList = new ArrayList<>();
         datasetFilesReplacementList = new ArrayList <>();
         
@@ -638,8 +652,8 @@ public final class DatasetVersionDifference {
         // lists; extra memory, but safer. 
         // -- L.A. Nov. 2016
         
-        List<FileMetadata> fileMetadatasNew = new ArrayList<>(newVersion.getFileMetadatas());
-        List<FileMetadata> fileMetadatasOriginal = new ArrayList<>(originalVersion.getFileMetadatas());
+        List<FileMetadata> fileMetadatasNew = new ArrayList<>(newFiles);
+        List<FileMetadata> fileMetadatasOriginal = new ArrayList<>(originalFiles);
         
         if (!replacedFiles.isEmpty()) {
             

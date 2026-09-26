@@ -1,6 +1,7 @@
 package edu.harvard.iq.dataverse;
 
 import edu.harvard.iq.dataverse.DatasetVersion.VersionState;
+import edu.harvard.iq.dataverse.datavariable.VariableMetadata;
 import edu.harvard.iq.dataverse.ingest.IngestUtil;
 import edu.harvard.iq.dataverse.pidproviders.PidUtil;
 import edu.harvard.iq.dataverse.search.IndexServiceBean;
@@ -166,7 +167,7 @@ public class DatasetVersionServiceBean implements java.io.Serializable {
     public DatasetVersion findDeep(Object pk) {
         return (DatasetVersion) em.createNamedQuery("DatasetVersion.findById")
             .setParameter("id", pk)
-            // Optimization hints: retrieve all data in one query; this prevents point queries when iterating over the files 
+            // Optimization hints: retrieve all data in one query; this prevents point queries when iterating over the files
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.ingestRequest")
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.thumbnailForDataset")
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.dataTables")
@@ -178,6 +179,120 @@ public class DatasetVersionServiceBean implements java.io.Serializable {
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.creator")
             .setHint("eclipselink.left-join-fetch", "o.fileMetadatas.dataFile.dataFileTags")
             .getSingleResult();
+    }
+
+    /**
+     * Datafile ids whose files take part in the difference between two versions:
+     * added, removed, replaced or file-metadata-changed files, plus files
+     * carrying variable rows on either side. Computed by a single native query
+     * ({@code FileMetadata.getInvolvedDatafileIdsBetweenVersions}); the pairwise
+     * comparison itself stays in {@link DatasetVersionDifference}.
+     *
+     * @param originalVersionId older version id
+     * @param newVersionId newer version id
+     * @return involved datafile ids
+     */
+    @SuppressWarnings("unchecked")
+    public List<Long> findInvolvedDatafileIds(Long originalVersionId, Long newVersionId) {
+        return em.createNamedQuery("FileMetadata.getInvolvedDatafileIdsBetweenVersions")
+            .setParameter(1, originalVersionId)
+            .setParameter(2, newVersionId)
+            .getResultList();
+    }
+
+    /**
+     * Builds the difference between two versions hydrating only the files
+     * involved in the change (see {@link #findInvolvedDatafileIds}). Files
+     * present and identical in both versions contribute nothing to any diff
+     * output, so the result is identical to
+     * {@code new DatasetVersionDifference(newVersion, originalVersion)} while
+     * the query count scales with the size of the change, not the dataset.
+     */
+    public DatasetVersionDifference buildVersionDifference(DatasetVersion newVersion, DatasetVersion originalVersion) {
+        List<Long> involvedDatafileIds = new ArrayList<>(findInvolvedDatafileIds(originalVersion.getId(), newVersion.getId()));
+        List<FileMetadata> newFiles = findFileMetadatasForDiff(newVersion.getId(), involvedDatafileIds);
+        List<FileMetadata> originalFiles = findFileMetadatasForDiff(originalVersion.getId(), involvedDatafileIds);
+        preloadVariableMetadata(newFiles, originalFiles);
+        return new DatasetVersionDifference(newVersion, originalVersion, newFiles, originalFiles);
+    }
+
+    /**
+     * Same lookup as {@link DatasetVersion#getDefaultVersionDifference()}, but
+     * computed through {@link #buildVersionDifference} so the compare-summary
+     * path does not hydrate full file graphs. Returns null when the version
+     * has no prior version to diff against, exactly like the entity method.
+     */
+    public DatasetVersionDifference buildDefaultVersionDifference(DatasetVersion version) {
+        if (version.isDeaccessioned()) {
+            return null;
+        }
+        List<DatasetVersion> versions = version.getDataset().getVersions();
+        int index = versions.indexOf(version);
+        if (index < 0) {
+            return null;
+        }
+        for (DatasetVersion prior : versions.subList(index + 1, versions.size())) {
+            if (!prior.isDeaccessioned()) {
+                return buildVersionDifference(version, prior);
+            }
+        }
+        return null;
+    }
+
+    private List<FileMetadata> findFileMetadatasForDiff(Long versionId, List<Long> datafileIds) {
+        if (datafileIds == null || datafileIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return em.createQuery(
+                "SELECT DISTINCT o FROM FileMetadata o "
+                    + "JOIN FETCH o.dataFile "
+                    + "LEFT JOIN FETCH o.fileCategories "
+                    + "LEFT JOIN FETCH o.varGroups "
+                    + "WHERE o.datasetVersion.id = :versionId AND o.dataFile.id IN :datafileIds",
+                FileMetadata.class)
+            .setParameter("versionId", versionId)
+            .setParameter("datafileIds", datafileIds)
+            .getResultList();
+    }
+
+    private void preloadVariableMetadata(List<FileMetadata> newFiles, List<FileMetadata> originalFiles) {
+        List<Long> fileMetadataIds = new ArrayList<>();
+        for (FileMetadata fm : newFiles) {
+            fileMetadataIds.add(fm.getId());
+        }
+        for (FileMetadata fm : originalFiles) {
+            fileMetadataIds.add(fm.getId());
+        }
+        if (fileMetadataIds.isEmpty()) {
+            return;
+        }
+        List<VariableMetadata> rows = em.createQuery(
+                "SELECT o FROM VariableMetadata o "
+                    + "JOIN FETCH o.fileMetadata "
+                    + "JOIN FETCH o.dataVariable "
+                    + "JOIN FETCH o.dataVariable.dataTable "
+                    + "WHERE o.fileMetadata.id IN :fmIds",
+                VariableMetadata.class)
+            .setParameter("fmIds", fileMetadataIds)
+            .getResultList();
+        HashMap<Long, List<VariableMetadata>> byFile = new HashMap<>();
+        for (VariableMetadata vm : rows) {
+            Long fmId = vm.getFileMetadata().getId();
+            List<VariableMetadata> fileRows = byFile.get(fmId);
+            if (fileRows == null) {
+                fileRows = new ArrayList<>();
+                byFile.put(fmId, fileRows);
+            }
+            fileRows.add(vm);
+        }
+        for (FileMetadata fm : newFiles) {
+            List<VariableMetadata> fileRows = byFile.get(fm.getId());
+            fm.setVariableMetadatas(fileRows == null ? new ArrayList<>() : fileRows);
+        }
+        for (FileMetadata fm : originalFiles) {
+            List<VariableMetadata> fileRows = byFile.get(fm.getId());
+            fm.setVariableMetadatas(fileRows == null ? new ArrayList<>() : fileRows);
+        }
     }
 
     /**

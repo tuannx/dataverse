@@ -55,6 +55,10 @@ public class GetDatasetVersionSummariesCommand extends AbstractPaginatedCommand<
 
         for (DatasetVersion version : versions) {
             version.setContributorNames(ctxt.datasetVersion().getContributorsNames(version));
+            // Precompute the difference through the native-query path so the
+            // summary mapping below reuses it instead of hydrating full file
+            // graphs per version (see #12102).
+            version.setDefaultVersionDifference(ctxt.datasetVersion().buildDefaultVersionDifference(version));
         }
 
         return versions.stream()
