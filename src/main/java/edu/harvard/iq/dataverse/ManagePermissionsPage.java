@@ -36,6 +36,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -171,11 +172,20 @@ public class ManagePermissionsPage implements java.io.Serializable {
         if (dvObject != null && dvObject.getId() != null) {
             Set<RoleAssignment> ras = roleService.rolesAssignments(dvObject);
             List<DataverseRole> availableRoles = getAvailableRoles();
+            // Resolve all assignees with batched lookups instead of one query per row.
+            List<String> assigneeIdentifiers = new ArrayList<>();
+            for (RoleAssignment roleAssignment : ras) {
+                if (availableRoles.contains(roleAssignment.getRole())) {
+                    assigneeIdentifiers.add(roleAssignment.getAssigneeIdentifier());
+                }
+            }
+            Map<String, RoleAssignee> assigneesByIdentifier =
+                    roleAssigneeService.getRoleAssignees(assigneeIdentifiers);
             raList = new ArrayList<>(ras.size());
             for (RoleAssignment roleAssignment : ras) {
                 // only show roles that are available for this DVObject
                 if (availableRoles.contains(roleAssignment.getRole())) {
-                    RoleAssignee roleAssignee = roleAssigneeService.getRoleAssignee(roleAssignment.getAssigneeIdentifier());
+                    RoleAssignee roleAssignee = assigneesByIdentifier.get(roleAssignment.getAssigneeIdentifier());
                     if (roleAssignee != null) {
                         raList.add(new RoleAssignmentRow(roleAssignment, roleAssignee.getDisplayInfo()));
                     } else {

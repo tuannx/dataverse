@@ -18,6 +18,9 @@ import edu.harvard.iq.dataverse.engine.command.DataverseRequest;
 import edu.harvard.iq.dataverse.mydata.MyDataFilterParams;
 import edu.harvard.iq.dataverse.privateurl.PrivateUrlUtil;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -117,6 +120,69 @@ public class RoleAssigneeServiceBean {
             default:
                 throw new IllegalArgumentException("Unsupported assignee identifier '" + identifier + "'");
         }
+    }
+
+    /**
+     * Batch version of {@link #getRoleAssignee(String)}: resolves many
+     * identifiers with two {@code IN} queries (users, explicit groups)
+     * instead of one query per identifier. Built-in ({@code :}) and private
+     * URL ({@code #}) identifiers cost no queries, exactly as before;
+     * non-explicit group providers fall back to per-alias lookup.
+     *
+     * @param identifiers assignee identifiers with prefixes
+     * @return resolved assignees by full identifier (unresolvable ones absent)
+     */
+    public Map<String, RoleAssignee> getRoleAssignees(Collection<String> identifiers) {
+        if (identifiers == null || identifiers.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, RoleAssignee> resolved = new HashMap<>();
+        List<String> userIdentifiers = new ArrayList<>();
+        Map<String, String> explicitGroupsByIdentifier = new HashMap<>();
+        for (String identifier : identifiers) {
+            if (identifier == null || identifier.isEmpty()) {
+                throw new IllegalArgumentException("Identifier cannot be null or empty string.");
+            }
+            switch (identifier.substring(0, 1)) {
+                case ":":
+                    RoleAssignee builtin = predefinedRoleAssignees.get(identifier);
+                    if (builtin != null) {
+                        resolved.put(identifier, builtin);
+                    }
+                    break;
+                case AuthenticatedUser.IDENTIFIER_PREFIX:
+                    userIdentifiers.add(identifier.substring(1));
+                    break;
+                case Group.IDENTIFIER_PREFIX:
+                    String withoutPrefix = identifier.substring(1);
+                    String[] comps = withoutPrefix.split(Group.PATH_SEPARATOR, 2);
+                    if (comps.length == 2 && "explicit".equals(comps[0])) {
+                        explicitGroupsByIdentifier.put(withoutPrefix, identifier);
+                    } else {
+                        Group group = groupSvc.getGroup(withoutPrefix);
+                        if (group != null) {
+                            resolved.put(identifier, group);
+                        }
+                    }
+                    break;
+                case PrivateUrlUser.PREFIX:
+                    resolved.put(identifier, PrivateUrlUtil.identifier2roleAssignee(identifier));
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported assignee identifier '" + identifier + "'");
+            }
+        }
+        for (AuthenticatedUser user : authSvc.findByIdentifiers(userIdentifiers)) {
+            resolved.put(AuthenticatedUser.IDENTIFIER_PREFIX + user.getUserIdentifier(), user);
+        }
+        Map<String, String> aliasByIdentifier = new HashMap<>();
+        for (Map.Entry<String, String> entry : explicitGroupsByIdentifier.entrySet()) {
+            aliasByIdentifier.put(entry.getKey().substring("explicit".length() + 1), entry.getValue());
+        }
+        for (ExplicitGroup group : explicitGroupSvc.findByAliases(aliasByIdentifier.keySet())) {
+            resolved.put(aliasByIdentifier.get(group.getAlias()), group);
+        }
+        return resolved;
     }
 
     public List<RoleAssignment> getAssignmentsFor(String roleAssigneeIdentifier) {
