@@ -57,7 +57,7 @@ public class UserNotificationServiceBean {
      */
     public List<UserNotification> findByUser(Long userId, boolean onlyUnread, Integer limit, Integer offset) {
         TypedQuery<UserNotification> query = em.createQuery(
-                "select un from UserNotification un " +
+                "select un from UserNotification un left join fetch un.requestor " +
                         "where un.user.id = :userId and (:onlyUnread = false or un.readNotification = false) " +
                         "order by un.sendDate desc",
                 UserNotification.class

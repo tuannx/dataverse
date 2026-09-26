@@ -1875,6 +1875,11 @@ public class JsonPrinter {
     public static JsonArrayBuilder json(List<UserNotification> notifications, AuthenticatedUser authenticatedUser, boolean inAppNotificationFormat) {
         JsonArrayBuilder notificationsArray = JsonUtil.createArrayBuilder();
 
+        // Preload every referenced object once so per-notification rendering below issues no queries (see #2892).
+        InAppNotificationsJsonPrinter.NotificationPreload preload = inAppNotificationFormat
+                ? inAppNotificationsJsonPrinter.preload(notifications)
+                : null;
+
         for (UserNotification notification : notifications) {
             NullSafeJsonBuilder notificationJson = jsonObjectBuilder();
             UserNotification.Type type = notification.getType();
@@ -1885,7 +1890,7 @@ public class JsonPrinter {
             notificationJson.add("sentTimestamp", notification.getSendDateTimestamp());
 
             if (inAppNotificationFormat) {
-                inAppNotificationsJsonPrinter.addFieldsByType(notificationJson, authenticatedUser, notification);
+                inAppNotificationsJsonPrinter.addFieldsByType(notificationJson, authenticatedUser, notification, preload);
             } else {
                 Object relatedObject = mailService.getObjectOfNotification(notification);
                 if (relatedObject != null) {

@@ -18,6 +18,7 @@ import edu.harvard.iq.dataverse.util.SystemConfig;
 import java.io.IOException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -147,7 +148,70 @@ public class DataFileServiceBean implements java.io.Serializable {
     
     public DataFile find(Object pk) {
         return em.find(DataFile.class, pk);
-    }   
+    }
+
+    /**
+     * Batch-loads data files with their full to-one closure (owner, quota,
+     * thumbnail back-reference, ingest request, embargo, retention) in a
+     * single query. Those relations are EAGER, so without the fetch each
+     * would cost one query per file; to-one joins never multiply rows.
+     *
+     * @param ids datafile ids; empty or null yields an empty list
+     * @return the found files (missing ids are skipped, like repeated finds)
+     */
+    public List<DataFile> findFilesByIds(Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return em.createQuery(
+                "SELECT f FROM DataFile f "
+                    + "LEFT JOIN FETCH f.owner "
+                    + "LEFT JOIN FETCH f.storageQuota "
+                    + "LEFT JOIN FETCH f.thumbnailForDataset "
+                    + "LEFT JOIN FETCH f.ingestRequest "
+                    + "LEFT JOIN FETCH f.embargo "
+                    + "LEFT JOIN FETCH f.retention "
+                    + "WHERE f.id IN :ids",
+                DataFile.class)
+            .setParameter("ids", ids)
+            .getResultList();
+    }
+
+    /**
+     * Preloads the file metadata of many data files with one {@code IN} query
+     * so per-row display code such as notification rendering does not issue
+     * one query per file. Setting this inverse-side collection issues no writes.
+     *
+     * @param dataFiles managed data files whose metadata to preload
+     */
+    public void preloadFileMetadatas(Collection<DataFile> dataFiles) {
+        if (dataFiles == null || dataFiles.isEmpty()) {
+            return;
+        }
+        List<Long> datafileIds = new ArrayList<>();
+        for (DataFile dataFile : dataFiles) {
+            datafileIds.add(dataFile.getId());
+        }
+        List<FileMetadata> rows = em.createQuery(
+                "SELECT o FROM FileMetadata o JOIN FETCH o.dataFile JOIN FETCH o.datasetVersion WHERE o.dataFile.id IN :ids",
+                FileMetadata.class)
+            .setParameter("ids", datafileIds)
+            .getResultList();
+        Map<Long, List<FileMetadata>> byFile = new HashMap<>();
+        for (FileMetadata fm : rows) {
+            Long fileId = fm.getDataFile().getId();
+            List<FileMetadata> fileRows = byFile.get(fileId);
+            if (fileRows == null) {
+                fileRows = new ArrayList<>();
+                byFile.put(fileId, fileRows);
+            }
+            fileRows.add(fm);
+        }
+        for (DataFile dataFile : dataFiles) {
+            List<FileMetadata> fileRows = byFile.get(dataFile.getId());
+            dataFile.setFileMetadatas(fileRows == null ? new ArrayList<>() : fileRows);
+        }
+    }
     
     /*public DataFile findByMD5(String md5Value){
         if (md5Value == null){
