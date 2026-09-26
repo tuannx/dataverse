@@ -488,6 +488,10 @@ public class DatasetVersion implements Serializable {
         return deaccessionNote;
     }
 
+    public void setDefaultVersionDifference(DatasetVersionDifference dvd) {
+        this.dvd = dvd;
+    }
+
     public DatasetVersionDifference getDefaultVersionDifference() {
         //Cache to avoid recalculating the difference many many times in the dataset-versions.xhtml page
         if(dvd!=null) {
