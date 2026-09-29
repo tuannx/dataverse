@@ -68,6 +68,8 @@ class VersionTabVariableLoadBudgetIT {
     static final int VERSION_COUNT = 2;
     /** Variables (and variable-metadata rows) per tabular file. */
     static final int VARS_PER_FILE = 3;
+    /** Fixed budget for the batched service-call section: 2 SELECTs whatever the file count. */
+    static final int SERVICE_BUDGET = 2;
 
     @BeforeAll
     static void setUp() {
@@ -128,6 +130,24 @@ class VersionTabVariableLoadBudgetIT {
         // One persistence context for the whole read, mirroring a page render:
         // versions/files load first (unmeasured), then the measured section runs
         // the exact service-call pattern of resetVersionTabList().
+        jpa.getEntityManagerFactory().getCache().evictAll();
+        long legacySelects = jpa.inTransaction(em -> {
+            VariableServiceBean variableService = newVariableService(em);
+            Dataset dataset = em.find(Dataset.class, datasetId);
+            List<Long> allFmIds = new ArrayList<>();
+            for (DatasetVersion version : dataset.getVersions()) {
+                for (FileMetadata fm : version.getFileMetadatas()) {
+                    allFmIds.add(fm.getId());
+                }
+            }
+            QueryCountHolder.clear();
+            for (Long fmId : allFmIds) {
+                variableService.findVarMetByFileMetaId(fmId);
+                variableService.findAllGroupsByFileMetadata(fmId);
+            }
+            return QueryCountHolder.getGrandTotal().getSelect();
+        });
+        jpa.getEntityManagerFactory().getCache().evictAll();
         long[] serviceSelects = {0};
         int[] totalFiles = {0};
         Map<Long, Integer> varMetCounts = jpa.inTransaction(em -> {
@@ -150,11 +170,14 @@ class VersionTabVariableLoadBudgetIT {
             serviceSelects[0] = QueryCountHolder.getGrandTotal().getSelect();
             return counts;
         });
-        System.out.println("[VersionTabVariableLoadBudgetIT] service-call SELECTs: " + serviceSelects[0]);
+        System.out.println("[VersionTabVariableLoadBudgetIT] legacy SELECTs: " + legacySelects
+                + ", service-call SELECTs: " + serviceSelects[0]);
 
         assertEquals(FILE_COUNT * VERSION_COUNT, totalFiles[0], "seeded files x versions");
-        assertTrue(serviceSelects[0] <= 2,
-                "expected 2 batched variable-service SELECTs, but got " + serviceSelects[0]);
+        assertTrue(legacySelects > SERVICE_BUDGET,
+                "legacy path should exceed the new-path budget, but got " + legacySelects);
+        assertTrue(serviceSelects[0] <= SERVICE_BUDGET,
+                "expected " + SERVICE_BUDGET + " batched variable-service SELECTs, but got " + serviceSelects[0]);
 
         // Behavioral check: only v1 files carry variable metadata (3 rows each).
         int totalVarMets = varMetCounts.values().stream().mapToInt(Integer::intValue).sum();
