@@ -256,6 +256,25 @@ public class AuthenticationServiceBean {
         }
     }
 
+    /**
+     * Batch version of {@link #getAuthenticatedUser(String)}: loads many
+     * users with a single {@code IN} query instead of one query per
+     * identifier.
+     *
+     * @param identifiers user identifiers (without the {@code @} prefix)
+     * @return the found users (missing identifiers are skipped)
+     */
+    public List<AuthenticatedUser> findByIdentifiers(Collection<String> identifiers) {
+        if (identifiers == null || identifiers.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return em.createQuery("SELECT u FROM AuthenticatedUser u LEFT JOIN FETCH u.authenticatedUserLookup "
+                + "WHERE u.userIdentifier IN :ids",
+                AuthenticatedUser.class)
+            .setParameter("ids", identifiers)
+            .getResultList();
+    }
+
     public AuthenticatedUser getAuthenticatedUserWithProvider(String identifier) {
         try {
             AuthenticatedUser authenticatedUser = em.createNamedQuery("AuthenticatedUser.findByIdentifier", AuthenticatedUser.class)

@@ -4,6 +4,7 @@ import edu.harvard.iq.dataverse.DvObject;
 import edu.harvard.iq.dataverse.RoleAssigneeServiceBean;
 import edu.harvard.iq.dataverse.authorization.RoleAssignee;
 import edu.harvard.iq.dataverse.authorization.users.AuthenticatedUser;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -110,6 +111,28 @@ public class ExplicitGroupServiceBean {
         } catch ( NoResultException nre ) {
             return null;
         }
+    }
+
+    /**
+     * Batch version of {@link #findByAlias(String)}: loads many groups with
+     * a single {@code IN} query instead of one query per alias.
+     *
+     * @param groupAliases group aliases (without the provider prefix)
+     * @return the found groups (missing aliases are skipped)
+     */
+    public List<ExplicitGroup> findByAliases(Collection<String> groupAliases) {
+        if (groupAliases == null || groupAliases.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<ExplicitGroup> groups = em.createQuery("SELECT eg FROM ExplicitGroup eg LEFT JOIN FETCH eg.owner "
+                + "WHERE eg.groupAlias IN :aliases",
+                ExplicitGroup.class)
+            .setParameter("aliases", groupAliases)
+            .getResultList();
+        for (ExplicitGroup group : groups) {
+            provider.updateProvider(group);
+        }
+        return groups;
     }
 
     public ExplicitGroup findInOwner(Long ownerId, String groupAliasInOwner) {
