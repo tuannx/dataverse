@@ -120,7 +120,7 @@ class RoleAssigneeBatchBudgetIT {
     }
 
     @Test
-    @DisplayName("permissions: batched assignee resolution costs 2 SELECTs, not 1 per row")
+    @DisplayName("permissions: batched assignee resolution stays within budget, not 1 per row")
     @EnableSameSelectTypesWithDifferentParamValues
     @ExpectUpdate(0)
     @ExpectInsert(0)
