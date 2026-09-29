@@ -6,6 +6,8 @@
 
 package edu.harvard.iq.dataverse.datavariable;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 import jakarta.ejb.Stateless;
@@ -68,6 +70,26 @@ public class VariableServiceBean {
         return query.getResultList();
 
     }
+
+    /**
+     * Batch version of {@link #findVarMetByFileMetaId(Long)}: loads the variable
+     * metadata of many files with a single {@code IN} query instead of one query
+     * per file. The to-one relations are join fetched (safe: no cartesian product),
+     * so grouping the result by file metadata id costs no extra queries.
+     *
+     * @param metaIds file metadata ids; empty or null yields an empty list
+     * @return variable metadata rows for all given files
+     */
+    public List<VariableMetadata> findVarMetsByFileMetaIds(Collection<Long> metaIds) {
+        if (metaIds == null || metaIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        TypedQuery<VariableMetadata> query = em.createQuery(
+                "SELECT o FROM VariableMetadata o JOIN FETCH o.fileMetadata JOIN FETCH o.dataVariable JOIN FETCH o.dataVariable.dataTable WHERE o.fileMetadata.id IN :fmIds",
+                VariableMetadata.class);
+        query.setParameter("fmIds", metaIds);
+        return query.getResultList();
+    }
     public List<VariableCategory> findCategory(Long varId, String catValue) {
         TypedQuery<VariableCategory> query = em.createQuery("SELECT object(o) FROM VariableCategory as o where o.dataVariable.id =:varId and o.value =:catValue", VariableCategory.class);
 
@@ -88,6 +110,27 @@ public class VariableServiceBean {
         TypedQuery<VarGroup> query = em.createQuery("SELECT object(o) FROM VarGroup as o where o.fileMetadata.id =:fileMetaId", VarGroup.class);
         query.setParameter("fileMetaId", fileMetaId);
 
+        return query.getResultList();
+    }
+
+    /**
+     * Batch version of {@link #findAllGroupsByFileMetadata(Long)}: loads the
+     * variable groups of many files with a single {@code IN} query instead of
+     * one query per file. The to-one file metadata relation is join fetched
+     * (safe: no cartesian product), so grouping the result by file metadata
+     * id costs no extra queries.
+     *
+     * @param fileMetaIds file metadata ids; empty or null yields an empty list
+     * @return variable groups for all given files
+     */
+    public List<VarGroup> findAllGroupsByFileMetadatas(Collection<Long> fileMetaIds) {
+        if (fileMetaIds == null || fileMetaIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        TypedQuery<VarGroup> query = em.createQuery(
+                "SELECT o FROM VarGroup o JOIN FETCH o.fileMetadata WHERE o.fileMetadata.id IN :fmIds",
+                VarGroup.class);
+        query.setParameter("fmIds", fileMetaIds);
         return query.getResultList();
     }
     

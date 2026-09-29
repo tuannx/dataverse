@@ -21,6 +21,8 @@ import edu.harvard.iq.dataverse.datacapturemodule.ScriptRequestResponse;
 import edu.harvard.iq.dataverse.dataset.DatasetThumbnail;
 import edu.harvard.iq.dataverse.dataset.DatasetUtil;
 import edu.harvard.iq.dataverse.datasetutility.FileSizeChecker;
+import edu.harvard.iq.dataverse.datavariable.VarGroup;
+import edu.harvard.iq.dataverse.datavariable.VariableMetadata;
 import edu.harvard.iq.dataverse.datavariable.VariableServiceBean;
 import edu.harvard.iq.dataverse.engine.command.Command;
 import edu.harvard.iq.dataverse.engine.command.CommandContext;
@@ -4805,11 +4807,39 @@ public class DatasetPage implements java.io.Serializable {
         List<DatasetVersion> retList = new ArrayList<>();
 
         if (permissionService.on(dataset).has(Permission.ViewUnpublishedDataset)) {
+            // Batch-load variable metadata for every file of every version with 2
+            // queries instead of 2 per file (N+1), then group in memory by file id.
+            List<Long> allFileMetadataIds = new ArrayList<>();
+            for (DatasetVersion version : dataset.getVersions()) {
+                for (FileMetadata fm : version.getFileMetadatas()) {
+                    allFileMetadataIds.add(fm.getId());
+                }
+            }
+            Map<Long, List<VariableMetadata>> varMetsByFile = new HashMap<>();
+            for (VariableMetadata vm : variableService.findVarMetsByFileMetaIds(allFileMetadataIds)) {
+                List<VariableMetadata> fileVarMets = varMetsByFile.get(vm.getFileMetadata().getId());
+                if (fileVarMets == null) {
+                    fileVarMets = new ArrayList<>();
+                    varMetsByFile.put(vm.getFileMetadata().getId(), fileVarMets);
+                }
+                fileVarMets.add(vm);
+            }
+            Map<Long, List<VarGroup>> groupsByFile = new HashMap<>();
+            for (VarGroup group : variableService.findAllGroupsByFileMetadatas(allFileMetadataIds)) {
+                List<VarGroup> fileGroups = groupsByFile.get(group.getFileMetadata().getId());
+                if (fileGroups == null) {
+                    fileGroups = new ArrayList<>();
+                    groupsByFile.put(group.getFileMetadata().getId(), fileGroups);
+                }
+                fileGroups.add(group);
+            }
             for (DatasetVersion version : dataset.getVersions()) {
                 Collection<FileMetadata> fml = version.getFileMetadatas();
                 for (FileMetadata fm : fml) {
-                    fm.setVariableMetadatas(variableService.findVarMetByFileMetaId(fm.getId()));
-                    fm.setVarGroups(variableService.findAllGroupsByFileMetadata(fm.getId()));
+                    List<VariableMetadata> fileVarMets = varMetsByFile.get(fm.getId());
+                    fm.setVariableMetadatas(fileVarMets == null ? new ArrayList<>() : fileVarMets);
+                    List<VarGroup> fileGroups = groupsByFile.get(fm.getId());
+                    fm.setVarGroups(fileGroups == null ? new ArrayList<>() : fileGroups);
                 }
                 version.setContributorNames(datasetVersionService.getContributorsNames(version));
                 retList.add(version);
