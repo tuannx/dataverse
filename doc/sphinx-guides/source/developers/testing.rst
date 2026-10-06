@@ -459,7 +459,7 @@ Our Jenkins config is a work in progress and may be viewed at https://github.com
 
 GitHub Actions jobs can be found in ``.github/workflows``.
 
-The API tests and the browser-based tests of the JSF frontend run against a live Dataverse installation in the "Containerized Tests for Dataverse" workflow (``containerized_tests.yml``). It builds the Dataverse containers once in a "Build Containers" job and hands them to jobs that run in parallel: one "JSF Tests" job per browser (Chromium, Firefox and WebKit) and one "Integration Tests" job for the API tests listed in :download:`tests/integration-tests.txt <../../../../tests/integration-tests.txt>`. Each job starts its own fresh Dataverse installation and uploads its own test report and container logs as artifacts.
+The API tests and the browser-based tests of the JSF frontend run against a live Dataverse installation in the "Containerized Tests for Dataverse" workflow (``containerized_tests.yml``). It builds the Dataverse containers once in a "Build Containers" job and hands them to jobs that run in parallel: one "JSF Tests" job per browser (Chromium, Firefox and WebKit) and three "Integration Tests" jobs. Those three jobs split the API tests listed in :download:`tests/integration-tests.txt <../../../../tests/integration-tests.txt>` using the per-class times in :download:`tests/integration-test-timings.csv <../../../../tests/integration-test-timings.csv>`. An "Integration Test Results" job then publishes one combined dashboard. Each test job starts its own fresh Dataverse installation and uploads its own test report and container logs as artifacts.
 
 As always, pull requests to improve our continuous integration configurations are welcome.
 
