@@ -1,0 +1,37 @@
+---
+name: Setup Java
+description: >-
+  Install Temurin 21 and Maven. Optionally cache ~/.m2/repository with an exact
+  key of the POM file hashes (no restore-keys, so a miss stays cold).
+
+inputs:
+  cache:
+    description: "Cache the local Maven repository keyed on POM hashes"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Java
+      uses: actions/setup-java@v6.0.1
+      with:
+        distribution: temurin
+        java-version: "21"
+
+    - name: Cache Maven repository
+      id: m2-cache
+      if: ${{ inputs.cache == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: ~/.m2/repository
+        key: m2-${{ runner.os }}-${{ hashFiles('pom.xml', 'modules/**/pom.xml', 'scripts/**/pom.xml') }}
+
+    - name: Record Maven cache result
+      if: ${{ inputs.cache == 'true' }}
+      shell: bash
+      run: echo "m2-cache-hit=${{ steps.m2-cache.outputs.cache-hit }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Verify Maven
+      shell: bash
+      run: mvn -version

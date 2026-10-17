@@ -1,0 +1,234 @@
+# Fork-only measurement of the containerized test layout agreed with IQSS:
+#   R1  integration tests, one job (not split)
+#   R2  Java JSF suite, Chromium then Firefox, on one runner
+#   R3  Java JSF suite, WebKit
+#   multi-arch app and configbaker images pushed to GHCR only after all three pass
+#
+# The JSF suite is the Java port (gdcc/dataverse-jsf-tests @ JSF_TESTS_REF), not the
+# Node suite checked out by dataverse_jsf_tests.yml.
+# This baseline builds the image on every test runner. Caching, preinstalling
+# browsers, and building once live on the optimized branch.
+
+name: Containerized Tests for Dataverse
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/ci-baseline-layout-2419
+      - cursor/ci-optimized-layout-2419
+
+concurrency:
+  group: containerized-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+env:
+  # java branch tip of gdcc/dataverse-jsf-tests, pinned so both arms run the same suite.
+  JSF_TESTS_REF: fcbfadd077507bbbe1ea335a3927df7afa3d3e99
+  BASE_URL: http://localhost:8080
+  LOGIN_ADAPTER: builtin
+  DV_USERNAME: dataverseAdmin
+  DV_PASSWORD: admin1
+  DV_FULL_NAME: Dataverse Admin
+  ROOT_DATAVERSE: /dataverse/root
+  LOCALLY_FAIR_ENABLED: "false"
+
+jobs:
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: ./.github/actions/setup-java-m2
+        with:
+          cache: "false"
+
+      - name: Build Dataverse images
+        uses: ./.github/actions/build-dataverse-images
+
+      - name: Start Dataverse stack
+        uses: ./.github/actions/start-dataverse-stack
+        with:
+          skip-image-build: "false"
+
+      - name: Run Maven integration tests
+        env:
+          DVAPIKEY: burrito
+          DV_APIKEY: burrito
+          DV_API_KEY: burrito
+        run: |
+          set -euo pipefail
+          TEST_SUITE=$(cat tests/integration-tests.txt)
+          echo "Running suite: $TEST_SUITE"
+          mvn -B test \
+            -Dtest="$TEST_SUITE" \
+            -Dmaven.test.failure.ignore=true \
+            -Ddataverse.test.baseurl="$BASE_URL" \
+            -Ddataverse.test.solr.softcommit.millis=100 \
+            -DcompilerArgument=-Xlint:unchecked
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maven-test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Check for test failures
+        if: always()
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(target/surefire-reports/*.xml target/failsafe-reports/*.xml)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No Surefire or Failsafe reports were produced."
+            exit 1
+          fi
+          if grep -q "<failure" "${reports[@]}"; then
+            echo "Integration tests failed."
+            exit 1
+          fi
+          echo "All integration tests passed."
+
+      - name: Collect Docker logs
+        if: always()
+        uses: ./.github/actions/collect-docker-logs
+        with:
+          artifact-name: docker-logs-integration
+
+  jsf-chromium-firefox:
+    name: JSF Tests (Chromium, Firefox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: ./.github/actions/setup-java-m2
+        with:
+          cache: "false"
+
+      - name: Build Dataverse images
+        uses: ./.github/actions/build-dataverse-images
+
+      - name: Start Dataverse stack
+        uses: ./.github/actions/start-dataverse-stack
+        with:
+          skip-image-build: "false"
+
+      - name: Run JSF tests (Chromium then Firefox)
+        uses: ./.github/actions/run-jsf-suite
+        with:
+          ref: ${{ env.JSF_TESTS_REF }}
+          browsers: chromium firefox
+          maven-args: -Dskip.webkit=true
+          artifact-suffix: chromium-firefox
+          cache-playwright: "false"
+          install-with-deps: "false"
+
+      - name: Collect Docker logs
+        if: always()
+        uses: ./.github/actions/collect-docker-logs
+        with:
+          artifact-name: docker-logs-jsf-chromium-firefox
+
+  jsf-webkit:
+    name: JSF Tests (WebKit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: ./.github/actions/setup-java-m2
+        with:
+          cache: "false"
+
+      - name: Build Dataverse images
+        uses: ./.github/actions/build-dataverse-images
+
+      - name: Start Dataverse stack
+        uses: ./.github/actions/start-dataverse-stack
+        with:
+          skip-image-build: "false"
+
+      - name: Run JSF tests (WebKit)
+        uses: ./.github/actions/run-jsf-suite
+        with:
+          ref: ${{ env.JSF_TESTS_REF }}
+          browsers: webkit
+          maven-args: -Ddataverse.test.jsf.browser=webkit
+          artifact-suffix: webkit
+          cache-playwright: "false"
+          install-with-deps: "false"
+
+      - name: Collect Docker logs
+        if: always()
+        uses: ./.github/actions/collect-docker-logs
+        with:
+          artifact-name: docker-logs-jsf-webkit
+
+  publish:
+    name: Publish multi-arch image
+    needs: [integration-tests, jsf-chromium-firefox, jsf-webkit]
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: ./.github/actions/setup-java-m2
+        with:
+          cache: "false"
+
+      - name: Verify Docker
+        run: docker version
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install reactor modules
+        run: |
+          set -euo pipefail
+          mvn -B -f modules/dataverse-parent -P ct -pl edu.harvard.iq:dataverse -am install -Dmaven.deploy.skip=true
+
+      - name: Push multi-arch images to GHCR
+        run: |
+          set -euo pipefail
+          TAG="ci-${GITHUB_RUN_ID}"
+          OWNER="${GITHUB_REPOSITORY_OWNER}"
+          APP_IMAGE="ghcr.io/${OWNER}/dataverse:${TAG}"
+          CONF_IMAGE="ghcr.io/${OWNER}/configbaker:${TAG}"
+          echo "Pushing ${APP_IMAGE}"
+          echo "Pushing ${CONF_IMAGE}"
+          echo "app-image=${APP_IMAGE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "configbaker-image=${CONF_IMAGE}" >> "$GITHUB_STEP_SUMMARY"
+          mvn -B -Pct deploy \
+            -Dmaven.deploy.skip=true \
+            -Dapp.image="${APP_IMAGE}" \
+            -Dconf.image="${CONF_IMAGE}" \
+            -Ddocker.platforms=linux/amd64,linux/arm64

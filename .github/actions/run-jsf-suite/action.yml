@@ -1,0 +1,102 @@
+---
+name: Run Java JSF suite
+description: >-
+  Check out gdcc/dataverse-jsf-tests (Java, Failsafe, *JT) and run mvn verify
+  for the requested browsers. Baseline installs OS libraries only; the suite
+  downloads each browser from inside the test JVM.
+
+inputs:
+  ref:
+    description: "Commit of gdcc/dataverse-jsf-tests to run"
+    required: true
+  browsers:
+    description: "Space-separated browsers passed to the Playwright CLI"
+    required: true
+  maven-args:
+    description: "Extra arguments for mvn verify, such as -Dskip.webkit=true"
+    required: false
+    default: ""
+  artifact-suffix:
+    description: "Suffix for the uploaded results artifact"
+    required: true
+  cache-playwright:
+    description: "Cache ~/.cache/ms-playwright"
+    required: false
+    default: "false"
+  install-with-deps:
+    description: "Install browser binaries and OS deps in this step instead of install-deps only"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout dataverse-jsf-tests
+      uses: actions/checkout@v7
+      with:
+        repository: gdcc/dataverse-jsf-tests
+        ref: ${{ inputs.ref }}
+        path: dataverse-jsf-tests
+
+    - name: Resolve Playwright version
+      id: playwright-version
+      shell: bash
+      working-directory: dataverse-jsf-tests
+      run: |
+        set -euo pipefail
+        version=$(sed -n 's:.*<playwright.version>\([^<]*\)</playwright.version>.*:\1:p' pom.xml)
+        if [ -z "$version" ]; then
+          echo "playwright.version was not found in the JSF POM"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "playwright-version=$version" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    # The browser set is part of the key so the Chromium/Firefox job and the
+    # WebKit job do not overwrite each other's cache entry.
+    - name: Cache Playwright browsers
+      id: playwright-cache
+      if: ${{ inputs.cache-playwright == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/ms-playwright
+        key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-${{ inputs.artifact-suffix }}
+
+    - name: Record Playwright cache result
+      if: ${{ inputs.cache-playwright == 'true' }}
+      shell: bash
+      run: echo "playwright-cache-hit=${{ steps.playwright-cache.outputs.cache-hit }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Install Playwright browser dependencies
+      shell: bash
+      working-directory: dataverse-jsf-tests
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.install-with-deps }}" = "true" ]; then
+          args="install --with-deps ${{ inputs.browsers }}"
+        else
+          args="install-deps ${{ inputs.browsers }}"
+        fi
+        echo "Playwright CLI: $args"
+        mvn -B test-compile exec:java \
+          -Dexec.mainClass=com.microsoft.playwright.CLI \
+          -Dexec.classpathScope=test \
+          -Dexec.args="$args"
+
+    - name: Run JSF tests
+      shell: bash
+      working-directory: dataverse-jsf-tests
+      run: mvn -B verify ${{ inputs.maven-args }}
+
+    - name: Upload JSF test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: jsf-test-results-${{ inputs.artifact-suffix }}
+        path: |
+          dataverse-jsf-tests/target/failsafe-reports/
+          dataverse-jsf-tests/target/playwright/
+        retention-days: 7
+        if-no-files-found: warn

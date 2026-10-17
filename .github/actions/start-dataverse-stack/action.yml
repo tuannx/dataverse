@@ -1,0 +1,100 @@
+---
+name: Start Dataverse stack
+description: >-
+  Start the dev stack from images already present on the runner and configure it
+  for the API and JSF suites.
+
+inputs:
+  skip-image-build:
+    description: "Pass the image skip flags so docker:start does not rebuild or repackage"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Verify Docker
+      shell: bash
+      run: docker version
+
+    - name: Start Dataverse stack
+      shell: bash
+      run: |
+        set -euo pipefail
+        SKIP_ARGS=()
+        if [ "${{ inputs.skip-image-build }}" = "true" ]; then
+          SKIP_ARGS+=(-Dapp.skipBuild=true -Dconf.skipBuild=true)
+        fi
+        mvn -B -Pct docker:start \
+          "${SKIP_ARGS[@]}" \
+          -Ddataverse.feature.index-harvested-metadata-source=true \
+          -Ddataverse.oai.server.maxidentifiers=2 \
+          -Ddataverse.oai.server.maxrecords=2 \
+          -Ddataverse.feature.allow-locally-fair-data=true
+
+    - name: Wait for Dataverse API readiness
+      shell: bash
+      run: |
+        set -euo pipefail
+        URL="${BASE_URL:-http://localhost:8080}/api/info/version"
+        MAX_ATTEMPTS=10
+        SLEEP_TIME=15
+        echo "Waiting for Dataverse readiness at $URL"
+        for attempt in $(seq 1 $MAX_ATTEMPTS); do
+          echo "Attempt $attempt..."
+          RESPONSE=$(curl -s --max-time 15 "$URL" || true)
+          STATUS=$(echo "$RESPONSE" | jq -r '.status' 2>/dev/null || echo "NOT_READY")
+          if [ "$STATUS" = "OK" ]; then
+            echo "Dataverse endpoint is READY."
+            echo "Waiting 30 more seconds for full readiness..."
+            sleep 30
+            echo "Response: $RESPONSE"
+            exit 0
+          fi
+          echo "Not ready. Sleeping ${SLEEP_TIME}s..."
+          sleep $SLEEP_TIME
+          if [ "$SLEEP_TIME" -lt 60 ]; then
+            SLEEP_TIME=$((SLEEP_TIME * 2))
+            if [ "$SLEEP_TIME" -gt 60 ]; then
+              SLEEP_TIME=60
+            fi
+          fi
+        done
+        echo "Dataverse failed to become ready."
+        docker ps
+        CONTAINERS="$(docker ps -aq)"
+        if [ -n "$CONTAINERS" ]; then
+          for cid in $CONTAINERS; do
+            echo "===== Logs for container $cid ====="
+            docker logs "$cid" || true
+          done
+        fi
+        exit 1
+
+    - name: Map localstack to localhost for Maven tests
+      shell: bash
+      run: echo "127.0.0.1 localstack" | sudo tee -a /etc/hosts
+
+    - name: Configure Dataverse API settings
+      shell: bash
+      run: |
+        set -euo pipefail
+        declare -A settings=(
+          [":BuiltinUsersKey"]="burrito"
+          [":ProvCollectionEnabled"]="true"
+          [":AllowApiTokenLookupViaApi"]="true"
+          [":AllowSignUp"]="true"
+        )
+        for key in "${!settings[@]}"; do
+          echo "Setting $key..."
+          docker exec dev_dataverse curl --fail-with-body -sS -X PUT -d "${settings[$key]}" "http://localhost:8080/api/admin/settings/$key"
+          echo ""
+        done
+
+    - name: Put SUSHI config file in place
+      shell: bash
+      run: |
+        set -euo pipefail
+        SOURCE_FILE="${GITHUB_WORKSPACE}/src/test/java/edu/harvard/iq/dataverse/makedatacount/sushi_sample_logs.json"
+        docker exec -i dev_dataverse sh -c "cat > /tmp/sushi_sample_logs.json" < "$SOURCE_FILE"
+        docker exec dev_dataverse ls -l /tmp/sushi_sample_logs.json

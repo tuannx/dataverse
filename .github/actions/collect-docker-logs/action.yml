@@ -1,0 +1,40 @@
+---
+name: Collect Docker logs
+description: Upload logs from every container left on the runner.
+
+inputs:
+  artifact-name:
+    description: "Artifact name"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Collect Docker logs
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p docker-logs
+        docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' > docker-logs/container-summary.txt || true
+        if [ ! -s docker-logs/container-summary.txt ]; then
+          echo "No containers." > docker-logs/container-summary.txt
+          exit 0
+        fi
+        while IFS='|' read -r name image status; do
+          [ -n "$name" ] || continue
+          {
+            echo "===== CONTAINER: $name ====="
+            echo "Image: $image"
+            echo "Status: $status"
+            echo ""
+            docker logs --timestamps "$name" 2>&1 || true
+          } > "docker-logs/${name}.log"
+        done < docker-logs/container-summary.txt
+
+    - name: Upload Docker logs
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: docker-logs/
+        retention-days: 7
+        if-no-files-found: warn
