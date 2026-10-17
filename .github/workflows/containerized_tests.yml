@@ -6,8 +6,8 @@
 #
 # The JSF suite is the Java port (gdcc/dataverse-jsf-tests @ JSF_TESTS_REF), not the
 # Node suite checked out by dataverse_jsf_tests.yml.
-# Optimized arm: Maven and Playwright caches are on. Browser binaries are still
-# downloaded by the test JVM, and each test runner still builds its own image.
+# Optimized arm: Maven and Playwright caches are on, and each JSF job installs
+# its browsers before the suite runs. Each test runner still builds its own image.
 
 name: Containerized Tests for Dataverse
 
@@ -138,7 +138,7 @@ jobs:
           maven-args: -Dskip.webkit=true
           artifact-suffix: chromium-firefox
           cache-playwright: "true"
-          install-with-deps: "false"
+          install-with-deps: "true"
 
       - name: Collect Docker logs
         if: always()
@@ -175,7 +175,7 @@ jobs:
           maven-args: -Ddataverse.test.jsf.browser=webkit
           artifact-suffix: webkit
           cache-playwright: "true"
-          install-with-deps: "false"
+          install-with-deps: "true"
 
       - name: Collect Docker logs
         if: always()
