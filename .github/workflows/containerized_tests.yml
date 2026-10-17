@@ -6,8 +6,8 @@
 #
 # The JSF suite is the Java port (gdcc/dataverse-jsf-tests @ JSF_TESTS_REF), not the
 # Node suite checked out by dataverse_jsf_tests.yml.
-# This baseline builds the image on every test runner. Caching, preinstalling
-# browsers, and building once live on the optimized branch.
+# Optimized arm: Maven and Playwright caches are on. Browser binaries are still
+# downloaded by the test JVM, and each test runner still builds its own image.
 
 name: Containerized Tests for Dataverse
 
@@ -50,7 +50,7 @@ jobs:
       - name: Setup Java
         uses: ./.github/actions/setup-java-m2
         with:
-          cache: "false"
+          cache: "true"
 
       - name: Build Dataverse images
         uses: ./.github/actions/build-dataverse-images
@@ -120,7 +120,7 @@ jobs:
       - name: Setup Java
         uses: ./.github/actions/setup-java-m2
         with:
-          cache: "false"
+          cache: "true"
 
       - name: Build Dataverse images
         uses: ./.github/actions/build-dataverse-images
@@ -137,7 +137,7 @@ jobs:
           browsers: chromium firefox
           maven-args: -Dskip.webkit=true
           artifact-suffix: chromium-firefox
-          cache-playwright: "false"
+          cache-playwright: "true"
           install-with-deps: "false"
 
       - name: Collect Docker logs
@@ -157,7 +157,7 @@ jobs:
       - name: Setup Java
         uses: ./.github/actions/setup-java-m2
         with:
-          cache: "false"
+          cache: "true"
 
       - name: Build Dataverse images
         uses: ./.github/actions/build-dataverse-images
@@ -174,7 +174,7 @@ jobs:
           browsers: webkit
           maven-args: -Ddataverse.test.jsf.browser=webkit
           artifact-suffix: webkit
-          cache-playwright: "false"
+          cache-playwright: "true"
           install-with-deps: "false"
 
       - name: Collect Docker logs
@@ -196,7 +196,7 @@ jobs:
       - name: Setup Java
         uses: ./.github/actions/setup-java-m2
         with:
-          cache: "false"
+          cache: "true"
 
       - name: Verify Docker
         run: docker version
