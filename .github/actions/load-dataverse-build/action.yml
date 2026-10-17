@@ -1,0 +1,28 @@
+---
+name: Load shared Dataverse build
+description: Download the images and exploded WAR produced by the build job.
+
+inputs:
+  artifact:
+    description: "Artifact name"
+    required: false
+    default: dataverse-build
+
+runs:
+  using: composite
+  steps:
+    - name: Download build artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/dataverse-build
+
+    - name: Load container images and exploded WAR
+      shell: bash
+      run: |
+        set -euo pipefail
+        zstd -dc "${{ runner.temp }}/dataverse-build/images.tar.zst" | docker load
+        mkdir -p target
+        zstd -dc "${{ runner.temp }}/dataverse-build/target-dataverse.tar.zst" | tar -C target -xf -
+        docker image inspect gdcc/dataverse:unstable gdcc/configbaker:unstable >/dev/null
+        test -d target/dataverse
